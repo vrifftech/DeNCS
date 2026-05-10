@@ -136,9 +136,15 @@ final class ExpressionFormatter {
          return false;
       }
 
-      // Equal precedence: parenthesize right-hand children when associativity differs
+      // Equal precedence: for bytecode-oriented output, preserve the tree shape of
+      // right-nested additive/multiplicative chains.  Flattening `a + (b + c)` to
+      // `a + b + c` is source-equivalent but can change KOTOR's mixed int/float
+      // opcode order.
       if (side == Position.RIGHT) {
          if (isNonAssociative(parentOp)) {
+            return true;
+         }
+         if (parentOp.equals(selfOp) && ("+".equals(parentOp) || "*".equals(parentOp))) {
             return true;
          }
          return !parentOp.equals(selfOp);

@@ -15,6 +15,7 @@ import com.kotor.resource.formats.ncs.utils.Type;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -55,8 +56,43 @@ public class PrototypeEngine {
          this.prototypeComponent(scc, subByPos);
       }
 
-      Map<Integer, Integer> callsiteParams = new CallSiteAnalyzer(this.nodedata, this.subdata, this.actions).analyze();
+      CallSiteAnalyzer callsiteAnalyzer = new CallSiteAnalyzer(this.nodedata, this.subdata, this.actions);
+      Map<Integer, Integer> callsiteParams = callsiteAnalyzer.analyze();
+      this.applyCallsiteParamHints(subByPos, callsiteAnalyzer.getInferredParamTypes());
       this.ensureAllPrototyped(subByPos.values(), callsiteParams);
+   }
+
+   private void applyCallsiteParamHints(
+      Map<Integer, com.kotor.resource.formats.ncs.node.ASubroutine> subByPos,
+      Map<Integer, List<Type>> callsiteParamTypes
+   ) {
+      for (Map.Entry<Integer, List<Type>> entry : callsiteParamTypes.entrySet()) {
+         com.kotor.resource.formats.ncs.node.ASubroutine sub = subByPos.get(entry.getKey());
+         if (sub == null) {
+            continue;
+         }
+         SubroutineState state = this.subdata.getState(sub);
+         List<Type> params = entry.getValue();
+         if (params == null || params.isEmpty()) {
+            continue;
+         }
+         // Only apply very conservative widening.  Call-site stack growth can
+         // over-count in large include-heavy helpers, so only repair the common
+         // proven failure shape: a zero-argument prototype reached exclusively
+         // through a single typed argument.  Do not shrink an existing prototype.
+         if (subByPos.size() <= 4 && state.getParamCount() == 0 && params.size() == 1
+               && params.get(0) != null && params.get(0).isTyped()) {
+            state.setParamCount(params.size());
+            state.updateParams(new LinkedList<Type>(params));
+            if (!state.isPrototyped()) {
+               state.startPrototyping();
+               if (!state.type().isTyped()) {
+                  state.setReturnType(new Type(Type.VT_INTEGER), 0);
+               }
+               state.stopPrototyping(true);
+            }
+         }
+      }
    }
 
    private Map<Integer, com.kotor.resource.formats.ncs.node.ASubroutine> indexSubroutines() {

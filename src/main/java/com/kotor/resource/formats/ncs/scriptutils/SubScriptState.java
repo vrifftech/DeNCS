@@ -39,6 +39,7 @@ import com.kotor.resource.formats.ncs.scriptnode.AErrorComment;
 import com.kotor.resource.formats.ncs.scriptnode.AElse;
 import com.kotor.resource.formats.ncs.scriptnode.AExpression;
 import com.kotor.resource.formats.ncs.scriptnode.AExpressionStatement;
+import com.kotor.resource.formats.ncs.scriptnode.AFieldExp;
 import com.kotor.resource.formats.ncs.scriptnode.AFcnCallExp;
 import com.kotor.resource.formats.ncs.scriptnode.AIf;
 import com.kotor.resource.formats.ncs.scriptnode.AModifyExp;
@@ -121,6 +122,11 @@ public class SubScriptState {
    }
 
    public SubScriptState(NodeAnalysisData nodedata, SubroutineAnalysisData subdata, LocalVarStack stack, boolean preferSwitches) {
+      this(nodedata, subdata, stack, null, preferSwitches);
+   }
+
+   public SubScriptState(NodeAnalysisData nodedata, SubroutineAnalysisData subdata, LocalVarStack stack,
+         ActionsData actions, boolean preferSwitches) {
       this.nodedata = nodedata;
       this.subdata = subdata;
       this.state = 0;
@@ -131,6 +137,7 @@ public class SubScriptState {
       this.varcounts = new Hashtable<>(1);
       this.varprefix = "";
       this.varnames = new Hashtable<>(1);
+      this.actions = actions;
       this.preferSwitches = preferSwitches;
    }
 
@@ -1805,16 +1812,34 @@ public class SubScriptState {
    }
 
    private void updateStructVar(ADestructCommand node) {
-      AVarRef varref = (AVarRef) this.getLastExp();
+      AExpression lastExp = this.getLastExp();
       int removesize = NodeUtils.stackSizeToPos(node.getSizeRem());
       int savestart = NodeUtils.stackSizeToPos(node.getOffset());
       int savesize = NodeUtils.stackSizeToPos(node.getSizeSave());
       if (savesize > 1) {
          throw new RuntimeException("Ah-ha!  A nested struct!  Now I have to code for that.  *sob*");
-      } else {
+      }
+
+      Variable var = (Variable) this.stack.get(removesize - savestart);
+
+      if (AVarRef.class.isInstance(lastExp)) {
+         AVarRef varref = (AVarRef) lastExp;
          this.setVarStructName((VarStruct) varref.var());
-         Variable var = (Variable) this.stack.get(removesize - savestart);
          varref.chooseStructElement(var);
+      } else {
+         // Some KOTOR2 scripts select a vector field directly from an action/function
+         // return value, e.g. SWMG_GetPosition(OBJECT_SELF).y.  The old path
+         // assumed DESTRUCT always targeted an AVarRef and threw ClassCastException.
+         AExpression base = this.removeLastExp(true);
+         String field;
+         if (removesize == 3 && savesize == 1) {
+            field = savestart == 0 ? "x" : (savestart == 1 ? "y" : "z");
+         } else {
+            field = var.toString();
+         }
+         AFieldExp fieldExp = new AFieldExp(base, field);
+         fieldExp.stackentry(var);
+         this.current.addChild(fieldExp);
       }
    }
 
@@ -2026,7 +2051,7 @@ public class SubScriptState {
       // paramtypes contains the actual parameter types from the action definition
       // Use paramtypes.size() as the parameter count - it represents the function signature
       int argBytes = NodeUtils.getActionParamCount(node);
-      int paramcount = paramtypes.size();
+      int paramcount = this.getExplicitActionParamCount(paramtypes, argBytes);
 
       Logger.trace("removeActionParams: argBytes=" + argBytes + ", paramtypes.size()=" + paramtypes.size() +
             ", using paramcount=" + paramcount);
@@ -2067,6 +2092,38 @@ public class SubScriptState {
       // Based on testing, they appear to be in the correct order already, so no reversal needed
       Logger.trace("removeActionParams: returning " + params.size() + " params, remaining children=" + (this.current.hasChildren() ? this.current.size() : 0));
       return params;
+   }
+
+   /**
+    * ACTION stores the number of stack cells actually supplied by the bytecode,
+    * not necessarily the number of parameters in nwscript.nss.  K1/TSL frequently
+    * omit trailing default arguments.  Consume only the leading formal parameters
+    * whose stack footprint is present, otherwise removeActionParams creates
+    * synthetic __unknown_param_* expressions for omitted defaults.
+    */
+   private int getExplicitActionParamCount(List<Type> paramtypes, int argCells) {
+      int cells = 0;
+      int count = 0;
+      for (Type paramtype : paramtypes) {
+         int paramCells;
+         try {
+            paramCells = NodeUtils.stackSizeToPos(paramtype.typeSize());
+         } catch (RuntimeException e) {
+            paramCells = 1;
+         }
+         if (cells + paramCells > argCells) {
+            break;
+         }
+         cells += paramCells;
+         count++;
+         if (cells == argCells) {
+            break;
+         }
+      }
+      if (cells != argCells) {
+         return Math.min(argCells, paramtypes.size());
+      }
+      return count;
    }
 
    private byte getFcnId(AJumpToSubroutine node) {

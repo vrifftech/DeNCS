@@ -2207,7 +2207,7 @@ public class FileDecompiler {
             sub = subdata.getGlobalsSub();
             if (sub != null) {
                try {
-                  doglobs = new DoGlobalVars(nodedata, subdata);
+                  doglobs = new DoGlobalVars(nodedata, subdata, this.actions);
                   sub.apply(doglobs);
                   cleanpass = new CleanupPass(doglobs.getScriptRoot(), nodedata, subdata, doglobs.getState());
                   cleanpass.apply();

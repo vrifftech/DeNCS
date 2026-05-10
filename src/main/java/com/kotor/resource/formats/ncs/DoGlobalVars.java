@@ -23,8 +23,8 @@ import com.kotor.resource.formats.ncs.utils.SubroutineAnalysisData;
 public class DoGlobalVars extends MainPass {
    private boolean freezeStack;
 
-   public DoGlobalVars(NodeAnalysisData nodedata, SubroutineAnalysisData subdata) {
-      super(nodedata, subdata);
+   public DoGlobalVars(NodeAnalysisData nodedata, SubroutineAnalysisData subdata, ActionsData actions) {
+      super(nodedata, subdata, actions);
       this.state.setVarPrefix("GLOB_");
       this.freezeStack = false;
    }

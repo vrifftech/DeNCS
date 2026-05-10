@@ -22,8 +22,11 @@ import com.kotor.resource.formats.ncs.utils.NodeUtils;
 import com.kotor.resource.formats.ncs.utils.SubroutineAnalysisData;
 import com.kotor.resource.formats.ncs.utils.SubroutineState;
 import com.kotor.resource.formats.ncs.utils.Type;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 
 
@@ -37,9 +40,13 @@ public class CallSiteAnalyzer extends PrunedDepthFirstAdapter {
    private final SubroutineAnalysisData subdata;
    private final ActionsData actions;
    private final Map<Integer, Integer> inferredParams = new HashMap<>();
+   private final Map<Integer, List<Type>> inferredParamTypes = new HashMap<>();
    private boolean skipdeadcode;
    private int height;
    private int growth;
+   private int possibleReturnSlotCells;
+   private boolean returnSlotPrefixOpen;
+   private LinkedList<Type> growthTypes = new LinkedList<>();
    private SubroutineState state;
 
    public CallSiteAnalyzer(NodeAnalysisData nodedata, SubroutineAnalysisData subdata, ActionsData actions) {
@@ -71,10 +78,17 @@ public class CallSiteAnalyzer extends PrunedDepthFirstAdapter {
       return this.inferredParams;
    }
 
+   public Map<Integer, List<Type>> getInferredParamTypes() {
+      return this.inferredParamTypes;
+   }
+
    private void analyzeSubroutine(ASubroutine sub) {
       this.state = this.subdata.getState(sub);
       this.height = this.initialHeight();
       this.growth = 0;
+      this.possibleReturnSlotCells = 0;
+      this.returnSlotPrefixOpen = true;
+      this.growthTypes.clear();
       this.skipdeadcode = false;
       sub.apply(this);
    }
@@ -102,28 +116,39 @@ public class CallSiteAnalyzer extends PrunedDepthFirstAdapter {
    @Override
    public void outARsaddCommand(ARsaddCommand node) {
       if (!this.skipdeadcode) {
-         this.push(1);
+         if (this.returnSlotPrefixOpen) {
+            this.possibleReturnSlotCells++;
+         }
+         this.push(NodeUtils.getType(node));
       }
    }
 
    @Override
    public void outAConstCommand(AConstCommand node) {
       if (!this.skipdeadcode) {
-         this.push(1);
+         this.returnSlotPrefixOpen = false;
+         this.push(NodeUtils.getType(node));
       }
    }
 
    @Override
    public void outACopyTopSpCommand(ACopyTopSpCommand node) {
       if (!this.skipdeadcode) {
-         this.push(NodeUtils.stackSizeToPos(node.getSize()));
+         this.returnSlotPrefixOpen = false;
+         this.pushUnknown(NodeUtils.stackSizeToPos(node.getSize()));
       }
    }
 
    @Override
    public void outACopyTopBpCommand(ACopyTopBpCommand node) {
       if (!this.skipdeadcode) {
-         this.push(NodeUtils.stackSizeToPos(node.getSize()));
+         this.returnSlotPrefixOpen = false;
+         int copy = NodeUtils.stackSizeToPos(node.getSize());
+         int loc = NodeUtils.stackOffsetToPos(node.getOffset());
+         for (int i = 0; i < copy; i++) {
+            this.push(this.subdata.getGlobalStack().getType(loc));
+            loc--;
+         }
       }
    }
 
@@ -139,7 +164,8 @@ public class CallSiteAnalyzer extends PrunedDepthFirstAdapter {
             add = 1;
          }
          this.pop(remove);
-         this.push(add);
+         this.returnSlotPrefixOpen = false;
+         this.push(rettype, add);
       }
    }
 
@@ -147,7 +173,7 @@ public class CallSiteAnalyzer extends PrunedDepthFirstAdapter {
    public void outALogiiCommand(ALogiiCommand node) {
       if (!this.skipdeadcode) {
          this.pop(2);
-         this.push(1);
+         this.push(new Type(Type.VT_INTEGER));
       }
    }
 
@@ -177,7 +203,7 @@ public class CallSiteAnalyzer extends PrunedDepthFirstAdapter {
          }
 
          this.pop(sizep1 + sizep2);
-         this.push(sizeresult);
+         this.push(new Type(Type.VT_INTEGER), sizeresult);
       }
    }
 
@@ -199,15 +225,18 @@ public class CallSiteAnalyzer extends PrunedDepthFirstAdapter {
    public void outAJumpToSubroutine(AJumpToSubroutine node) {
       if (!this.skipdeadcode) {
          int dest = NodeUtils.getJumpDestinationPos(node);
-         // Growth tracks pushes since the last statement boundary/reset. For JSR call-sites,
-         // that growth includes the reserved return slot (RSADD) plus the actual arguments.
-         // We want argument count, so subtract the return slot when present.
+         // Growth tracks pushes since the last statement boundary/reset.  A non-void
+         // script helper reserves its return slot with one or more leading RSADD opcodes;
+         // a void helper with arguments does not.  The previous implementation always
+         // subtracted one cell, which misclassified the sole argument of calls such as
+         // "CPTOPBP; JSR voidHelper" as a return slot and produced zero-argument helpers.
          int inferred = Math.max(0, this.growth);
-         if (inferred > 0) {
-            inferred = Math.max(0, inferred - 1);
+         if (this.possibleReturnSlotCells > 0 && this.possibleReturnSlotCells <= inferred) {
+            inferred = Math.max(0, inferred - this.possibleReturnSlotCells);
          }
 
          this.inferredParams.merge(dest, inferred, Math::max);
+         this.mergeParamTypes(dest, inferred);
          // Pop only the arguments; the return slot remains on the stack.
          this.pop(inferred);
          this.resetGrowth();
@@ -230,13 +259,30 @@ public class CallSiteAnalyzer extends PrunedDepthFirstAdapter {
       }
    }
 
-   private void push(int count) {
+   private void push(Type type) {
+      int cells;
+      try {
+         cells = NodeUtils.stackSizeToPos(type.typeSize());
+      } catch (RuntimeException e) {
+         cells = 1;
+      }
+      this.push(type, cells);
+   }
+
+   private void push(Type type, int count) {
       if (count <= 0) {
          return;
       }
 
       this.height += count;
       this.growth += count;
+      for (int i = 0; i < count; i++) {
+         this.growthTypes.addFirst(type != null ? type : new Type(Type.VT_INVALID));
+      }
+   }
+
+   private void pushUnknown(int count) {
+      this.push(new Type(Type.VT_INVALID), count);
    }
 
    private void pop(int count) {
@@ -246,9 +292,43 @@ public class CallSiteAnalyzer extends PrunedDepthFirstAdapter {
 
       this.height = Math.max(0, this.height - count);
       this.growth = Math.max(0, this.growth - count);
+      for (int i = 0; i < count && !this.growthTypes.isEmpty(); i++) {
+         this.growthTypes.removeFirst();
+      }
    }
 
    private void resetGrowth() {
       this.growth = 0;
+      this.possibleReturnSlotCells = 0;
+      this.returnSlotPrefixOpen = true;
+      this.growthTypes.clear();
+   }
+
+   private void mergeParamTypes(int dest, int inferred) {
+      if (inferred <= 0) {
+         return;
+      }
+      ArrayList<Type> args = new ArrayList<>();
+      for (int i = 0; i < inferred; i++) {
+         if (i < this.growthTypes.size()) {
+            args.add(this.growthTypes.get(i));
+         } else {
+            args.add(new Type(Type.VT_INVALID));
+         }
+      }
+      List<Type> old = this.inferredParamTypes.get(dest);
+      if (old == null || args.size() > old.size()) {
+         this.inferredParamTypes.put(dest, args);
+         return;
+      }
+      if (args.size() == old.size()) {
+         for (int i = 0; i < args.size(); i++) {
+            Type cur = old.get(i);
+            Type next = args.get(i);
+            if ((cur == null || !cur.isTyped()) && next != null && next.isTyped()) {
+               old.set(i, next);
+            }
+         }
+      }
    }
 }

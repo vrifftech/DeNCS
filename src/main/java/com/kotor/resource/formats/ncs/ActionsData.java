@@ -73,7 +73,7 @@ public class ActionsData {
       // - "// 123." (some vendor variants)
       // - "// 123"  (some tool-distributed nwscript files)
       // Reject enumerated lists like "// 6) ..." which otherwise desync indices.
-      Pattern header = Pattern.compile("^\\s*//\\s*(\\d+)\\s*(?:[\\.:]\\s*.*)?$");
+      Pattern header = Pattern.compile("^\\s*//\\s*(\\d+)(?:\\s*:\\s*.*|\\s*\\.\\s*(?!\\d).*)?$");
       Pattern sig = Pattern.compile("^\\s*(\\w+)\\s+(\\w+)\\s*\\((.*)\\)\\s*;?.*");
 
       String str;

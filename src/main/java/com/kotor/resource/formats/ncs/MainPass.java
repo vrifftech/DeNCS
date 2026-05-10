@@ -75,10 +75,15 @@ public class MainPass extends PrunedDepthFirstAdapter {
    }
 
    protected MainPass(NodeAnalysisData nodedata, SubroutineAnalysisData subdata) {
+      this(nodedata, subdata, null);
+   }
+
+   protected MainPass(NodeAnalysisData nodedata, SubroutineAnalysisData subdata, ActionsData actions) {
       this.nodedata = nodedata;
       this.subdata = subdata;
+      this.actions = actions;
       this.skipdeadcode = false;
-      this.state = new SubScriptState(nodedata, subdata, this.stack, FileDecompiler.preferSwitches);
+      this.state = new SubScriptState(nodedata, subdata, this.stack, actions, FileDecompiler.preferSwitches);
       this.globals = true;
       this.backupstack = null;
       this.type = new Type((byte)-1);
